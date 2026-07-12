@@ -1,39 +1,31 @@
-# System Design Write-up — Ticket Booking System
+# System Design — Ticket Booking System
 
-## 1. Seat Hold & TTL Mechanism
+## Seat hold and TTL
 
-Every physical seat in a venue is copied into a `show_seats` row per event (materialized
-at event-creation time). This row is the single source of truth for that seat's live
-status in that specific show: `available`, `held`, `offered`, or `booked`.
+Every physical seat belonging to a venue (`venue_seats`) is materialised into a
+`show_seats` row for each event at the moment that event is created. That row, not the
+physical seat, is the single source of truth for a seat's status in a specific show:
+`available`, `held`, `offered`, or `booked`. When a customer holds seats, the row is
+stamped with `status = 'held'`, `held_by`, and `held_until = now() + SEAT_HOLD_TTL_MINUTES`
+(10 minutes by default). There's no separate cache entry or queued job carrying the
+expiry — it's a column on the row that's already being read and written anyway, so it
+survives a server restart for free and adds no new moving part.
 
-When a customer selects seats and clicks "Hold", the API stamps the row with
-`status = 'held'`, `held_by = <user id>`, and `held_until = now() + SEAT_HOLD_TTL_MINUTES`
-(default 10 minutes, configurable via environment variable). No separate cache or queue
-is used — the expiry timestamp lives directly on the row, so it survives server restarts
-and requires no extra infrastructure.
+Two things enforce that TTL, on purpose. A sweeper (`expireHolds.js`) runs every 15
+seconds, finds every held seat whose `held_until` has passed, flips it back to
+`available`, and pushes the change out over WebSocket — the active, background half of
+"held seats auto-release on abandonment." But a 15-second sweep interval leaves a window
+where a hold has technically expired but hasn't been swept yet, so the
+booking-confirmation query independently filters on `held_until > now()`. A customer
+can't slip a booking through on an already-expired hold just because the sweeper hasn't
+caught up yet. A customer can also release seats explicitly before the TTL lapses, which
+takes the same immediate-update-plus-broadcast path.
 
-Two things enforce the TTL:
+## Concurrency
 
-1. **Active enforcement**: a `setInterval` sweeper (`expireHolds.js`) runs every 15
-   seconds, finds every `held` seat whose `held_until` has passed, flips it back to
-   `available`, and broadcasts the change over WebSocket to anyone viewing that event's
-   seat map — this is what makes "held seats are shown as unavailable to other
-   customers" and "auto-release on abandonment" work without the customer needing to do
-   anything.
-2. **Passive enforcement**: when a customer tries to *confirm* a booking, the query that
-   reads their held seats explicitly filters `held_until > now()`. So even in the up-to-
-   15-second window before the sweeper runs, a booking cannot be confirmed on an
-   already-expired hold — the confirm endpoint re-validates freshness itself.
-
-A customer can also explicitly abandon checkout (`/seats/release`), which immediately
-frees the seat rather than waiting for the TTL — this updates the seat map in real time
-for other customers via the same WebSocket broadcast path.
-
-## 2. Concurrency Protection
-
-The core risk is two customers racing to hold or book the same seat. Rather than
-introducing a lock manager or Redis, the system relies on PostgreSQL's native row-level
-locking through a single atomic statement:
+The scenario that actually matters here is two customers racing for the same seat at the
+same instant. Rather than adding a lock manager or reaching for Redis, the hold and the
+booking-confirmation both do their work inside one conditional UPDATE:
 
 ```sql
 UPDATE show_seats
@@ -42,46 +34,45 @@ WHERE id = ANY($seatIds) AND event_id = $event AND status = 'available'
 RETURNING id;
 ```
 
-Postgres guarantees that only one transaction can successfully update a given row from
-`available` to `held` — a concurrent second UPDATE targeting the same row blocks until
-the first commits, and then simply matches zero rows (because the row is no longer
-`available`). The API compares how many rows were actually returned against how many
-were requested: if fewer seats were updated than requested, the whole hold is rolled
-back (all-or-nothing) and the caller is told exactly which seats were lost. This makes
-seat holds atomic per request without needing SELECT ... FOR UPDATE, distributed locks,
-or optimistic-retry loops — the `WHERE status = 'available'` clause *is* the lock. The
-same pattern (an UPDATE guarded by an expected current status) is reused for
-confirming a booking from a held seat and for cancelling one, so no code path can act on
-stale seat state. A `version` column is also incremented on every transition, giving a
-lightweight audit trail and a hook for future optimistic-concurrency checks on the
-client if needed.
+Postgres won't let two transactions both flip the same row from `available` to `held` —
+the second simply matches zero rows, because by the time it runs the row is no longer
+`available`. So the API doesn't need to check-then-act; it compares how many rows it
+asked to update against how many came back. If those numbers don't match, some requested
+seats were already gone, and the whole hold is rolled back rather than partially granted —
+a customer gets every seat they asked for or none of them, and is told which ones were
+lost. The `WHERE status = 'available'` clause does the job a lock would otherwise do. The
+same pattern — an UPDATE guarded by the status it expects to find — is what confirming
+and cancelling a booking both rely on too, so no code path can act on stale status.
 
-## 3. Waitlist Auto-Assignment Flow
+## Waitlist auto-assignment
 
-Waitlist entries are FIFO per `(event_id, category)`, ordered by `created_at`. Whenever a
-seat frees up — either through a booking cancellation or an expired waitlist offer — the
-shared `offerSeatToNextInLine()` service is invoked with that seat's event, category, and
-id. It:
+Waitlist entries queue per `(event_id, category)`, ordered by creation. Position is
+computed by counting entries with a lower `id` rather than an earlier `created_at` —
+`id` is a database-assigned, strictly increasing integer, whereas comparing timestamps
+round-tripped through the driver risks precision mismatches between JavaScript's
+millisecond `Date` and Postgres's microsecond `timestamptz`, which surfaced as an
+off-by-one during testing before the switch.
 
-1. Selects the oldest `waiting` entry for that category with `FOR UPDATE SKIP LOCKED`
-   (so concurrent cancellations across different seats never contend for the same
-   waitlist row).
-2. If someone is waiting, marks their entry `offered`, attaches the specific seat id and
-   a random offer token, sets `offer_expires_at = now() + WAITLIST_OFFER_TTL_MINUTES`
-   (default 15 minutes), and flips the seat's status to `offered` (visually distinct from
-   `available` on the seat map, and not directly bookable by anyone else).
-3. Emails the waitlisted customer a link containing the offer token.
-4. If nobody is waiting, the seat is simply released back to `available` for normal
-   direct booking.
+Whenever a seat frees up — a cancellation, or an expired offer cascading further down the
+line — `offerSeatToNextInLine()` runs. It selects the oldest waiting entry for that
+category with `FOR UPDATE SKIP LOCKED`, so seats freeing up concurrently across different
+cancellations never contend for the same waitlist row. If someone is waiting, their entry
+becomes `offered`, tied to that seat with a random token and an `offer_expires_at` (15
+minutes by default), and the seat moves to `offered` — distinct from `available`, so
+nobody else can pick it up while it's reserved. If nobody is waiting, the seat is simply
+released back to `available`. Either way, the seat and the waitlist entry update in the
+same transaction, so there's no gap where the seat looks free but the queue hasn't been
+consulted.
 
-## 4. Time-Limited Offer Handling
+## Time-limited offers
 
-The offer link (`/waitlist-offer/:token`) resolves to a public read endpoint (to preview
-the offer) and an authenticated confirm endpoint. Confirming re-validates, inside a
-transaction, that the offer is still `offered`, unexpired, and belongs to the
-authenticated user before converting it into a real booking (price lookup, QR
-generation, email) — the same all-or-nothing guard pattern as regular booking. A second
-sweeper (`expireWaitlistOffers.js`) runs every 15 seconds, finds offers whose
-`offer_expires_at` has passed and were never confirmed, marks them `expired`, and
-recursively calls `offerSeatToNextInLine()` again for the same seat — cascading the seat
-down the queue automatically until someone claims it or the queue is empty.
+The offer link resolves to a public preview endpoint and a separate, authenticated
+confirm endpoint. Confirming re-checks — inside its own transaction — that the offer
+still belongs to the requesting user, is still in `offered` state, and hasn't passed its
+expiry, before it's converted into an actual booking with a price lookup, a generated QR
+code, and a confirmation email. That re-check matters because the offer could have
+expired in the seconds between the customer opening the link and clicking confirm. A
+second sweeper (`expireWaitlistOffers.js`) runs on the same 15-second interval as the hold
+sweeper, finds offers that lapsed unclaimed, marks them `expired`, and calls
+`offerSeatToNextInLine()` again for that same seat — which is what lets an unclaimed offer
+cascade down the queue on its own until someone claims it or nobody's left waiting.
