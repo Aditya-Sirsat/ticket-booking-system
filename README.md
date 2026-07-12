@@ -140,6 +140,18 @@ are no undocumented ones. Worth calling out specifically:
   since the brief only calls for customer and organiser self-registration; venue creation
   is an admin-only action by design.
 
+## Deployed instance
+
+- **Frontend**: https://ticket-booking-system-3bmqrmoi8-ratlab.vercel.app/
+- **Backend API**: https://ticket-booking-api-febw.onrender.com
+
+The backend runs on Render's free web-service tier, which is why the SMTP-vs-HTTP-API
+choice for email (see above) mattered in practice and not just in theory — Render blocks
+outbound SMTP on this tier, so Brevo's HTTPS API was the deployable option, not just the
+tidier one. On the free tier the backend also spins down after a period of inactivity, so
+the first request after a quiet spell can take several seconds to respond while it wakes
+back up; that's Render's behaviour, not an application bug.
+
 ## Repository hygiene
 
 `node_modules/`, `.env`/`.env.local`, build output (`dist/`, `.next/`, `out/`), and editor
