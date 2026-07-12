@@ -88,29 +88,29 @@ cascade in detail — that reasoning isn't repeated here.
 
 All authenticated routes expect `Authorization: Bearer <token>`.
 
-| Area     | Method & path                             | Auth            | Notes                                                              |
-| -------- | ----------------------------------------- | --------------- | ------------------------------------------------------------------ |
-| Auth     | `POST /api/auth/register`                 | –               | `{ name, email, password, role }`, role is customer or organiser   |
-| Auth     | `POST /api/auth/login`                    | –               | Returns `{ token, user }`                                          |
-| Auth     | `GET /api/auth/me`                        | ✅              | Decoded JWT payload                                                |
-| Venues   | `GET /api/venues`                         | –               | List venues                                                        |
-| Venues   | `GET /api/venues/:id/seats`               | –               | Physical seats + categories                                        |
-| Venues   | `POST /api/venues`                        | admin           | `{ name, address, rows, cols, categoryRules[] }`                   |
-| Events   | `GET /api/events?type=&date=&q=`          | –               | Browse / filter                                                    |
-| Events   | `GET /api/events/:id`                     | –               | Details + category prices                                          |
-| Events   | `GET /api/events/organiser/mine`          | organiser       | Events the caller created                                          |
-| Events   | `GET /api/events/:id/summary`             | organiser/admin | Revenue, confirmed bookings, seat-status breakdown, waiting counts |
-| Events   | `POST /api/events`                        | organiser/admin | `{ title, type, venueId, eventDate, eventTime, prices[] }`         |
-| Seats    | `GET /api/events/:eventId/seats`          | –               | Full seat map with live status                                     |
-| Seats    | `POST /api/events/:eventId/seats/hold`    | customer        | `{ showSeatIds[] }`, atomic, TTL-bound                             |
-| Seats    | `POST /api/events/:eventId/seats/release` | customer        | `{ showSeatIds[] }`, explicit checkout abandonment                 |
-| Bookings | `POST /api/bookings`                      | customer        | Confirms held seats, emails QR ticket                              |
-| Bookings | `GET /api/bookings/mine`                  | customer        | Booking history                                                    |
-| Bookings | `POST /api/bookings/:id/cancel`           | customer        | Cancels, triggers a waitlist offer if anyone is waiting            |
-| Waitlist | `POST /api/waitlist/events/:eventId/join` | customer        | `{ category }`, rejected if that category isn't actually sold out  |
-| Waitlist | `GET /api/waitlist/mine`                  | customer        | Caller's waitlist entries                                          |
-| Waitlist | `GET /api/waitlist/offer/:token`          | –               | Preview a time-limited offer                                       |
-| Waitlist | `POST /api/waitlist/offer/:token/confirm` | customer        | Claims the offered seat before it expires                          |
+| Area | Method & path | Auth | Notes |
+|---|---|---|---|
+| Auth | `POST /api/auth/register` | – | `{ name, email, password, role }`, role is customer or organiser |
+| Auth | `POST /api/auth/login` | – | Returns `{ token, user }` |
+| Auth | `GET /api/auth/me` | ✅ | Decoded JWT payload |
+| Venues | `GET /api/venues` | – | List venues |
+| Venues | `GET /api/venues/:id/seats` | – | Physical seats + categories |
+| Venues | `POST /api/venues` | admin | `{ name, address, rows, cols, categoryRules[] }` |
+| Events | `GET /api/events?type=&date=&q=` | – | Browse / filter |
+| Events | `GET /api/events/:id` | – | Details + category prices |
+| Events | `GET /api/events/organiser/mine` | organiser | Events the caller created |
+| Events | `GET /api/events/:id/summary` | organiser/admin | Revenue, confirmed bookings, seat-status breakdown, waiting counts |
+| Events | `POST /api/events` | organiser/admin | `{ title, type, venueId, eventDate, eventTime, prices[] }` |
+| Seats | `GET /api/events/:eventId/seats` | – | Full seat map with live status |
+| Seats | `POST /api/events/:eventId/seats/hold` | customer | `{ showSeatIds[] }`, atomic, TTL-bound |
+| Seats | `POST /api/events/:eventId/seats/release` | customer | `{ showSeatIds[] }`, explicit checkout abandonment |
+| Bookings | `POST /api/bookings` | customer | Confirms held seats, emails QR ticket |
+| Bookings | `GET /api/bookings/mine` | customer | Booking history |
+| Bookings | `POST /api/bookings/:id/cancel` | customer | Cancels, triggers a waitlist offer if anyone is waiting |
+| Waitlist | `POST /api/waitlist/events/:eventId/join` | customer | `{ category }`, rejected if that category isn't actually sold out |
+| Waitlist | `GET /api/waitlist/mine` | customer | Caller's waitlist entries |
+| Waitlist | `GET /api/waitlist/offer/:token` | – | Preview a time-limited offer |
+| Waitlist | `POST /api/waitlist/offer/:token/confirm` | customer | Claims the offered seat before it expires |
 
 Real-time updates travel over `ws(s)://<host>/ws?eventId=<id>` as
 `{ type: 'seat_update', seats: [...] }` messages, pushed whenever any seat in that event
@@ -151,6 +151,22 @@ outbound SMTP on this tier, so Brevo's HTTPS API was the deployable option, not 
 tidier one. On the free tier the backend also spins down after a period of inactivity, so
 the first request after a quiet spell can take several seconds to respond while it wakes
 back up; that's Render's behaviour, not an application bug.
+
+## Proof of email delivery
+
+Since the booking-confirmation and waitlist-offer emails go out through Brevo's API
+rather than SMTP, the clearest evidence that this is actually wired up and working in the
+deployed instance is Brevo's own delivery record, not just the application code:
+
+- `docs/email-proof/brevo-logs-export.csv` — the exported transactional log for the
+  sender account, listing each send with its timestamp and delivery status
+- `docs/email-proof/brevo-dashboard-log.png` — the same log viewed directly in the Brevo
+  dashboard
+- `docs/email-proof/received-email.png` — a booking-confirmation email as it actually
+  arrived in a customer inbox, QR code included
+
+These confirm the mailer isn't just configured but has actually sent and delivered mail
+from the live deployment.
 
 ## Repository hygiene
 
