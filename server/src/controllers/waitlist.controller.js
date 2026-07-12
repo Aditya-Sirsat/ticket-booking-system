@@ -1,6 +1,6 @@
 const { pool } = require('../config/db');
 const { sendMail } = require('../config/mailer');
-const { generateTicketQr } = require('../utils/qrcode');
+const { generateTicketQr, qrDataUrlToBase64 } = require('../utils/qrcode');
 const { generateBookingRef } = require('../utils/bookingRef');
 const { broadcastSeatUpdate } = require('../realtime/ws');
 
@@ -154,6 +154,7 @@ async function confirmOffer(req, res, next) {
     broadcastSeatUpdate(offer.event_id, [{ id: seat.id, status: 'booked' }]);
 
     try {
+      // See booking.controller.js for why the QR is attached rather than inlined.
       await sendMail({
         to: req.user.email,
         subject: `Your waitlist seat is confirmed — ${bookingRef}`,
@@ -161,8 +162,9 @@ async function confirmOffer(req, res, next) {
           <p>Hi ${req.user.name},</p>
           <p>Your waitlisted seat for <strong>${event.title}</strong> on ${event.event_date} at ${event.event_time} is now confirmed.</p>
           <p><strong>Booking reference:</strong> ${bookingRef}</p>
-          <img src="${qrDataUrl}" alt="Ticket QR code" width="220" height="220" />
-        `
+          <p>Your entry QR code is attached to this email as <strong>ticket-qr.png</strong> — show it at the entrance. You can also view it any time from "My Bookings" in the app.</p>
+        `,
+        attachments: [{ name: 'ticket-qr.png', content: qrDataUrlToBase64(qrDataUrl) }]
       });
     } catch (mailErr) {
       console.error('Waitlist offer confirmed but ticket email failed to send:', mailErr.message);

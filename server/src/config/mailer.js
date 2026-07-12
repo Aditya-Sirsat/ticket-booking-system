@@ -10,7 +10,7 @@
 const BREVO_ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
 const REQUEST_TIMEOUT_MS = 8000;
 
-async function sendMail({ to, subject, html }) {
+async function sendMail({ to, subject, html, attachments }) {
   const apiKey = process.env.BREVO_API_KEY;
   const senderEmail = process.env.BREVO_SENDER_EMAIL;
   const senderName = process.env.BREVO_SENDER_NAME || 'Ticket Booking';
@@ -23,6 +23,20 @@ async function sendMail({ to, subject, html }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
+  // Brevo's API has no support for inline (CID) images, and most webmail clients
+  // (Gmail included) strip `data:` URI images out of the HTML body entirely, which is
+  // why the QR code must travel as a real `attachment` entry, not an <img src="data:...">
+  // tag — see the comment where this is called from.
+  const body = {
+    sender: { name: senderName, email: senderEmail },
+    to: [{ email: to }],
+    subject,
+    htmlContent: html
+  };
+  if (attachments && attachments.length > 0) {
+    body.attachment = attachments;
+  }
+
   try {
     const res = await fetch(BREVO_ENDPOINT, {
       method: 'POST',
@@ -31,12 +45,7 @@ async function sendMail({ to, subject, html }) {
         'Content-Type': 'application/json',
         Accept: 'application/json'
       },
-      body: JSON.stringify({
-        sender: { name: senderName, email: senderEmail },
-        to: [{ email: to }],
-        subject,
-        htmlContent: html
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal
     });
 

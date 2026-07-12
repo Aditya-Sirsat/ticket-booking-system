@@ -1,6 +1,6 @@
 const { pool } = require('../config/db');
 const { sendMail } = require('../config/mailer');
-const { generateTicketQr } = require('../utils/qrcode');
+const { generateTicketQr, qrDataUrlToBase64 } = require('../utils/qrcode');
 const { generateBookingRef } = require('../utils/bookingRef');
 const { broadcastSeatUpdate } = require('../realtime/ws');
 const { offerSeatToNextInLine } = require('../services/waitlistService');
@@ -75,6 +75,10 @@ async function createBooking(req, res, next) {
     // The booking is already committed at this point — an email hiccup must never
     // turn a successful booking into an error response for the customer.
     try {
+      // The QR travels as a real attachment, not an inline <img src="data:...">. Brevo's
+      // API doesn't support inline (CID) images, and webmail clients like Gmail strip
+      // data: URIs out of the HTML body — either path renders as a broken image icon.
+      // A plain attachment is the one form every client actually displays/downloads.
       await sendMail({
         to: req.user.email,
         subject: `Your ticket for ${event.title} — ${bookingRef}`,
@@ -83,9 +87,9 @@ async function createBooking(req, res, next) {
           <p>Your booking for <strong>${event.title}</strong> on ${event.event_date} at ${event.event_time} is confirmed.</p>
           <p><strong>Booking reference:</strong> ${bookingRef}</p>
           <p><strong>Total paid:</strong> ${total}</p>
-          <p>Show the QR code below at the entrance:</p>
-          <img src="${qrDataUrl}" alt="Ticket QR code" width="220" height="220" />
-        `
+          <p>Your entry QR code is attached to this email as <strong>ticket-qr.png</strong> — show it at the entrance. You can also view it any time from "My Bookings" in the app.</p>
+        `,
+        attachments: [{ name: 'ticket-qr.png', content: qrDataUrlToBase64(qrDataUrl) }]
       });
     } catch (mailErr) {
       console.error('Booking confirmed but ticket email failed to send:', mailErr.message);
