@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment files (never commit secrets)
+.env
+**/.env
+.env.local
+**/.env.local
+
+# Build artifacts
+dist/
+**/dist/
+build/
+.next/
+out/
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+npm-debug.log*
+*.log
