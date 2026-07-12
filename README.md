@@ -115,21 +115,28 @@ npm run dev           # starts on http://localhost:5173
 
 ## 4. Email (QR ticket) Setup
 
-Any free-tier SMTP provider works. Two easy options:
+Email is sent via **Brevo's HTTP API**, not SMTP. This is a deliberate choice: most
+free-tier hosts (Render, Heroku, etc.) block outbound SMTP ports (25/465/587) to prevent
+spam abuse, which makes Gmail/SMTP mail unreachable from a free web service. Brevo's API
+travels over HTTPS (port 443) — the same port all your other outbound traffic already
+uses — so it works everywhere, including free hosting tiers.
 
-- **Gmail**: enable 2FA on the Google account, generate an
-  ["App Password"](https://myaccount.google.com/apppasswords), and use:
-  ```
-  SMTP_HOST=smtp.gmail.com
-  SMTP_PORT=587
-  SMTP_USER=youraddress@gmail.com
-  SMTP_PASS=<the 16-character app password>
-  ```
-- **Brevo (formerly Sendinblue)** free tier: create an account, get SMTP credentials
-  from Settings → SMTP & API.
+1. Create a free account at [brevo.com](https://www.brevo.com) (300 emails/day, no card
+   required).
+2. Go to **Senders, Domains & Dedicated IPs → Senders** and add/verify the email address
+   you want tickets to be sent from (Brevo emails you a verification link — click it).
+3. Go to **Settings → SMTP & API → API Keys**, click **Generate a new API key**, and copy
+   it.
+4. Set these environment variables:
+   ```
+   BREVO_API_KEY=<the key you just generated>
+   BREVO_SENDER_EMAIL=<the address you verified in step 2>
+   BREVO_SENDER_NAME=Ticket Booking
+   ```
 
-If `SMTP_USER`/`SMTP_PASS` are left blank, the server **does not fail** — it logs a
-warning and skips sending, so you can still test the booking flow without email set up.
+If `BREVO_API_KEY`/`BREVO_SENDER_EMAIL` are left blank, the server **does not fail** — it
+logs a warning and skips sending, so you can still test the booking flow without email
+set up.
 
 ---
 
